@@ -1,183 +1,198 @@
-import tkinter as tk
-from tkinter import simpledialog, messagebox, filedialog
+import streamlit as st
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.integrate import quad
-from scipy import special, signal  # 引入信號處理庫
-import sys
-import csv
+from scipy import special, signal
+import pandas as pd
+import io
 
-# 設定 Matplotlib 字型 (避免負號顯示問題)
-plt.rcParams['axes.unicode_minus'] = False
+# 設定頁面標題與寬度
+st.set_page_config(page_title="傅立葉級數視覺化", layout="wide")
 
-def solve_and_plot():
-    root = tk.Tk()
-    root.withdraw()
+# --- 標題與說明 ---
+st.title("📈 傅立葉級數線上視覺化 (Fourier Series Viz)")
+st.markdown("""
+輸入數學函數 $f(x)$，此工具將計算其傅立葉級數近似，並提供 **圖片** 與 **係數表** 下載。
+支援語法：`square(x)`, `sawtooth(x)`, `sin(x)`, `abs(x)` 等。
+""")
 
+# --- 側邊欄：快速範例選擇 ---
+st.sidebar.header("⚡ 快速範例")
+
+# 修正點 1: 這裡移除 'signal.' 前綴，直接呼叫函數名，避免解析錯誤
+example_options = {
+    "自訂輸入": "",
+    "方波 (Square Wave)": "square(x)",
+    "多週期方波": "square(3 * x)",
+    "鋸齒波 (Sawtooth)": "sawtooth(x)",
+    "三角波 (Triangle)": "sawtooth(x, 0.5)",
+    "全波整流": "abs(sin(x))",
+    "半波整流": "maximum(sin(x), 0)",
+    "脈衝波 (Duty Cycle)": "square(x, duty=0.2)"
+}
+
+selected_example = st.sidebar.radio("選擇預設波形：", list(example_options.keys()))
+
+# 根據選擇更新預設值
+default_func = "x"
+if selected_example != "自訂輸入":
+    default_func = example_options[selected_example]
+
+# --- 主介面：輸入參數 ---
+col1, col2, col3, col4 = st.columns(4)
+
+with col1:
+    # 這裡加上 key 以便重置
+    func_str = st.text_input("函數 f(x)", value=default_func, help="使用 Python 語法，如 x**2, sin(x)")
+with col2:
+    a = st.number_input("區間起點 a", value=-3.14159, step=1.0, format="%.4f")
+with col3:
+    b = st.number_input("區間終點 b", value=3.14159, step=1.0, format="%.4f")
+with col4:
+    N = st.number_input("展開項數 N", value=30, min_value=1, step=1)
+
+# --- 核心邏輯函數 ---
+def get_fourier_data(func_str, a, b, N):
+    # 1. 解析函數
+    def f(x_val):
+        # 修正點 2: 擴充 allowed_locals，確保兼容性
+        allowed_locals = {
+            "x": x_val, "np": np, "signal": signal,
+            # 基礎數學
+            "sin": np.sin, "cos": np.cos, "tan": np.tan,
+            "exp": np.exp, "pi": np.pi, "abs": np.abs, 
+            "sqrt": np.sqrt, "log": np.log, "sign": np.sign,
+            "maximum": np.maximum, "minimum": np.minimum,
+            # 信號函數 (直接使用)
+            "square": signal.square, "sawtooth": signal.sawtooth,
+            # 特殊函數
+            "gamma": special.gamma, "sinh": np.sinh, "cosh": np.cosh,
+        }
+        return eval(func_str, {"__builtins__": None}, allowed_locals)
+
+    # 2. 計算係數
+    L = b - a
+    omega = 2 * np.pi / L
+    
+    data = [] 
+    A_coeffs = []
+    B_coeffs = []
+
+    # A0
     try:
-        # ==========================================
-        # 1. GUI 輸入階段
-        # ==========================================
-        print("--- 系統就緒 ---")
-        
-        prompt_msg = (
-            "請輸入函數 f(x) (Python 語法):\n\n"
-            "常用範例 (假設區間 -3.14 到 3.14):\n"
-            "1. 方波: square(x)\n"
-            "2. 多週期方波: square(3 * x)\n"
-            "3. 鋸齒波: sawtooth(x)\n"
-            "4. 三角波: sawtooth(x, 0.5)\n"
-            "5. 傳統正弦: sin(x)"
-        )
-
-        func_str = simpledialog.askstring("Input", prompt_msg, initialvalue="square(x)")
-        if func_str is None: return
-
-        a_str = simpledialog.askstring("Input", "請輸入區間起始 a:", initialvalue="-3.14159")
-        if a_str is None: return
-        a = float(a_str)
-
-        b_str = simpledialog.askstring("Input", "請輸入區間結束 b:", initialvalue="3.14159")
-        if b_str is None: return
-        b = float(b_str)
-
-        n_str = simpledialog.askstring("Input", "請輸入展開項數 N (建議 >= 20):", initialvalue="30")
-        if n_str is None: return
-        N = int(n_str)
-
-        if N < 1:
-            messagebox.showerror("錯誤", "項數 N 必須大於 0")
-            return
-
-        # ==========================================
-        # 2. 定義數學環境
-        # ==========================================
-        def f(x_val):
-            allowed_locals = {
-                "x": x_val,
-                "np": np,
-                # 基礎數學
-                "sin": np.sin, "cos": np.cos, "tan": np.tan,
-                "exp": np.exp, "pi": np.pi, "abs": np.abs, 
-                "sqrt": np.sqrt, "log": np.log, "sign": np.sign,
-                
-                # 波形函數
-                "square": signal.square,   
-                "sawtooth": signal.sawtooth, 
-
-                # 特殊函數
-                "gamma": special.gamma,
-                "sinh": np.sinh, "cosh": np.cosh,
-            }
-            return eval(func_str, {"__builtins__": None}, allowed_locals)
-
-        try:
-            f(0.5 * (a + b))
-        except Exception as e:
-            messagebox.showerror("語法錯誤", f"函數解析失敗: {e}")
-            return
-
-        # ==========================================
-        # 3. 計算傅立葉係數
-        # ==========================================
-        L = b - a
-        omega = 2 * np.pi / L
-        
-        print(f"\n正在計算傅立葉係數 (N={N})...")
-
-        excel_data = []
-        A_coeffs = []
-        B_coeffs = []
-
-        # 計算 A0
         val_a0, _ = quad(lambda x: f(x), a, b, limit=200)
         A0 = (2.0 / L) * val_a0
-        A_coeffs.append(A0)
-        B_coeffs.append(0.0)
-        excel_data.append([0, A0, 0])
-
-        # 計算 An, Bn
-        for n in range(1, N + 1):
-            val_an, _ = quad(lambda x: f(x) * np.cos(n * omega * x), a, b, limit=100)
-            an = (2.0 / L) * val_an
-            
-            val_bn, _ = quad(lambda x: f(x) * np.sin(n * omega * x), a, b, limit=100)
-            bn = (2.0 / L) * val_bn
-
-            A_coeffs.append(an)
-            B_coeffs.append(bn)
-            excel_data.append([n, an, bn])
-            
-            if n % 10 == 0: print(f"進度: {n}/{N}")
-
-        # ==========================================
-        # 4. 匯出 Excel
-        # ==========================================
-        save_path = filedialog.asksaveasfilename(
-            title="匯出係數表",
-            defaultextension=".csv",
-            filetypes=[("Excel CSV", "*.csv")],
-            initialfile="fourier_data.csv"
-        )
-
-        if save_path:
-            try:
-                with open(save_path, 'w', newline='', encoding='utf-8-sig') as csvfile:
-                    writer = csv.writer(csvfile, delimiter='\t')
-                    writer.writerow(['n', 'An', 'Bn'])
-                    writer.writerows(excel_data)
-                messagebox.showinfo("完成", f"檔案已儲存：{save_path}")
-            except Exception as e:
-                messagebox.showerror("存檔錯誤", str(e))
-
-        # ==========================================
-        # 5. 繪圖邏輯 (依需求修改)
-        # ==========================================
-        # 增加取樣點讓波形更圓滑
-        x_vals = np.linspace(a, b, 2000)
-        y_original = np.array([f(val) for val in x_vals])
-
-        def fourier_sum(x_input, k_terms):
-            result = A_coeffs[0] / 2.0
-            for n in range(1, k_terms + 1):
-                result += A_coeffs[n] * np.cos(n * omega * x_input) + \
-                          B_coeffs[n] * np.sin(n * omega * x_input)
-            return result
-
-        # 計算 N=1, N=3, 以及最終 N
-        y_n1 = fourier_sum(x_vals, 1)
-        y_n3 = fourier_sum(x_vals, 3)
-        y_final = fourier_sum(x_vals, N)
-
-        plt.figure(figsize=(12, 7))
-        
-        # 1. 原函數 (黑色實線, 粗度 2)
-        plt.plot(x_vals, y_original, color='black', linestyle='-', linewidth=2, alpha=0.5, label='Original f(x)')
-        
-        # 2. N=1 (綠色點線)
-        plt.plot(x_vals, y_n1, color='green', linestyle=':', linewidth=1.5, alpha=0.8, label='N=1 (Base)')
-        
-        # 3. N=3 (橘色點劃線) - 只有當使用者輸入的 N >= 3 時才畫，避免報錯或重疊
-        if N >= 3:
-            plt.plot(x_vals, y_n3, color='orange', linestyle='-.', linewidth=1.5, alpha=0.8, label='N=3')
-
-        # 4. 最終近似 N (藍色虛線, 粗度 2.5) -> 這是您要求的「改成虛線」
-        plt.plot(x_vals, y_final, color='blue', linestyle='--', linewidth=2.5, alpha=0.9, label=f'N={N} Approximation')
-
-        plt.title(f"Fourier Series Analysis: {func_str}")
-        plt.xlabel("x")
-        plt.ylabel("f(x)")
-        plt.legend(loc='upper right', shadow=True) # 圖例加上陰影比較好看
-        plt.grid(True, linestyle='--', alpha=0.6)
-        
-        # 標示 x 軸 0 線
-        plt.axhline(0, color='black', linewidth=0.8)
-        
-        plt.tight_layout()
-        plt.show()
-
     except Exception as e:
-        messagebox.showerror("執行錯誤", str(e))
+        # 捕捉常見錯誤並轉為易讀文字
+        return None, None, None, f"解析或積分錯誤: {str(e)}\n請檢查語法 (例如乘號 * 是否遺漏)"
 
-if __name__ == "__main__":
-    solve_and_plot()
+    A_coeffs.append(A0)
+    B_coeffs.append(0.0)
+    data.append({"n": 0, "An": A0, "Bn": 0.0})
+
+    # Progress bar
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    for n in range(1, N + 1):
+        val_an, _ = quad(lambda x: f(x) * np.cos(n * omega * x), a, b, limit=100)
+        an = (2.0 / L) * val_an
+        
+        val_bn, _ = quad(lambda x: f(x) * np.sin(n * omega * x), a, b, limit=100)
+        bn = (2.0 / L) * val_bn
+
+        A_coeffs.append(an)
+        B_coeffs.append(bn)
+        data.append({"n": n, "An": an, "Bn": bn})
+        
+        if n % 5 == 0:
+            progress_bar.progress(n / N)
+            status_text.text(f"正在計算第 {n}/{N} 項...")
+            
+    progress_bar.empty()
+    status_text.empty()
+
+    # 3. 準備繪圖函數
+    def fourier_sum(x_input, k_terms):
+        result = A_coeffs[0] / 2.0
+        for k in range(1, k_terms + 1):
+            result += A_coeffs[k] * np.cos(k * omega * x_input) + \
+                      B_coeffs[k] * np.sin(k * omega * x_input)
+        return result
+
+    return data, f, fourier_sum, None
+
+# --- 執行按鈕 ---
+if st.button("🚀 開始計算與繪圖", type="primary"):
+    with st.spinner("正在進行數學運算..."):
+        data_list, f_func, f_sum_func, error_msg = get_fourier_data(func_str, a, b, N)
+
+    if error_msg:
+        st.error(error_msg)
+    else:
+        # 建立 DataFrame
+        df = pd.DataFrame(data_list)
+
+        # --- 繪圖區塊 ---
+        st.subheader("📊 視覺化結果")
+        
+        # 設定 Matplotlib
+        plt.rcParams['axes.unicode_minus'] = False
+        fig, ax = plt.subplots(figsize=(10, 6))
+        
+        x_vals = np.linspace(a, b, 1000)
+        
+        # 繪製原函數
+        try:
+            y_original = [f_func(val) for val in x_vals]
+            ax.plot(x_vals, y_original, 'k-', linewidth=2, alpha=0.5, label='Original f(x)')
+        except Exception as e:
+            st.warning(f"無法完整繪製原函數: {e}")
+
+        # 繪製近似線
+        y_n1 = f_sum_func(x_vals, 1)
+        ax.plot(x_vals, y_n1, 'g:', linewidth=1.5, alpha=0.8, label='N=1')
+
+        if N >= 3:
+            y_n3 = f_sum_func(x_vals, 3)
+            ax.plot(x_vals, y_n3, 'orange', linestyle='-.', linewidth=1.5, alpha=0.8, label='N=3')
+
+        y_final = f_sum_func(x_vals, N)
+        ax.plot(x_vals, y_final, 'b--', linewidth=2.5, alpha=0.9, label=f'N={N} Approximation')
+
+        ax.set_title(f"Fourier Series: {func_str}")
+        ax.set_xlabel("x")
+        ax.set_ylabel("f(x)")
+        ax.legend(loc='upper right')
+        ax.grid(True, linestyle='--', alpha=0.6)
+        ax.axhline(0, color='black', linewidth=0.8)
+
+        st.pyplot(fig)
+
+        # --- 下載區塊 ---
+        col_d1, col_d2 = st.columns(2)
+
+        img_buffer = io.BytesIO()
+        fig.savefig(img_buffer, format='png', dpi=300)
+        img_buffer.seek(0)
+        
+        with col_d1:
+            st.download_button(
+                label="📥 下載圖表 (PNG)",
+                data=img_buffer,
+                file_name="fourier_plot.png",
+                mime="image/png"
+            )
+
+        csv_data = df.to_csv(index=False, sep='\t', encoding='utf-8-sig')
+        
+        with col_d2:
+            st.download_button(
+                label="📥 下載係數表 (Excel/CSV)",
+                data=csv_data,
+                file_name="fourier_coefficients.csv",
+                mime="text/csv"
+            )
+
+        with st.expander("點擊查看詳細係數表"):
+            st.dataframe(df)
