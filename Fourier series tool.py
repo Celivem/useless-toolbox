@@ -7,21 +7,21 @@ import pandas as pd
 import io
 
 # 設定頁面
-st.set_page_config(page_title="傅立葉級數視覺化 (互動版)", layout="wide")
+st.set_page_config(page_title="傅立葉級數可視化", layout="wide")
 
 # --- 初始化 Session State (用來暫存計算結果) ---
 if 'fourier_result' not in st.session_state:
     st.session_state['fourier_result'] = None
 
 # --- 標題 ---
-st.title("📈 傅立葉級數互動實驗室")
+st.title("傅立葉級數可視化")
 st.markdown("""
 1. 設定 **最大項數 (Max N)** 並按下計算。
 2. 計算完成後，使用下方的 **拉桿** 即時調整 N 值，觀察波形如何逼近。
 """)
 
 # --- 側邊欄：快速範例 ---
-st.sidebar.header("⚡ 快速範例")
+st.sidebar.header("簡單範例")
 example_options = {
     "自訂輸入": "",
     "方波 (Square)": "square(x)",
@@ -122,7 +122,7 @@ def calculate_coefficients(func_str, a, b, max_n):
     }, None
 
 # --- 按鈕區 ---
-if st.button("🚀 開始計算 (建立係數庫)", type="primary"):
+if st.button("開始計算 (建立係數庫)", type="primary"):
     with st.spinner("正在進行積分運算，這可能需要一點時間..."):
         result, error = calculate_coefficients(func_str, a, b, max_n)
         
@@ -192,7 +192,7 @@ if st.session_state['fourier_result'] is not None:
     img_buffer = io.BytesIO()
     fig.savefig(img_buffer, format='png', dpi=300)
     img_buffer.seek(0)
-    col_d1.download_button("📥 下載此圖 (PNG)", img_buffer, f"fourier_N{current_n}.png", "image/png")
+    col_d1.download_button("下載此圖 (PNG)", img_buffer, f"fourier_N{current_n}.png", "image/png")
 
     # 表格下載 (產生包含所有係數的表)
     df = pd.DataFrame({
@@ -201,13 +201,14 @@ if st.session_state['fourier_result'] is not None:
         "Bn": res["B"]
     })
     csv_data = df.to_csv(index=False, sep='\t', encoding='utf-8-sig')
-    col_d2.download_button("📥 下載完整係數表 (CSV)", csv_data, "coeffs.csv", "text/csv")
+    col_d2.download_button("下載完整係數表 (CSV)", csv_data, "coeffs.csv", "text/csv")
 
     # 係數預覽
     with st.expander(f"查看前 {current_n} 項係數數值"):
         st.dataframe(df.head(current_n + 1))
 
     # 重置按鈕
-    if st.button("🔄 清除結果 / 重新輸入"):
+    if st.button("清除結果 / 重新輸入"):
         st.session_state['fourier_result'] = None
         st.rerun()
+
