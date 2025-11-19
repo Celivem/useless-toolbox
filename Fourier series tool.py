@@ -6,95 +6,86 @@ from scipy import special, signal
 import pandas as pd
 import io
 
-# 設定頁面標題與寬度
-st.set_page_config(page_title="傅立葉級數視覺化", layout="wide")
+# 設定頁面
+st.set_page_config(page_title="傅立葉級數視覺化 (互動版)", layout="wide")
 
-# --- 標題與說明 ---
-st.title("📈 傅立葉級數線上視覺化 (Fourier Series Viz)")
+# --- 初始化 Session State (用來暫存計算結果) ---
+if 'fourier_result' not in st.session_state:
+    st.session_state['fourier_result'] = None
+
+# --- 標題 ---
+st.title("📈 傅立葉級數互動實驗室")
 st.markdown("""
-輸入數學函數 $f(x)$，此工具將計算其傅立葉級數近似，並提供 **圖片** 與 **係數表** 下載。
-支援語法：`square(x)`, `sawtooth(x)`, `sin(x)`, `abs(x)` 等。
+1. 設定 **最大項數 (Max N)** 並按下計算。
+2. 計算完成後，使用下方的 **拉桿** 即時調整 N 值，觀察波形如何逼近。
 """)
 
-# --- 側邊欄：快速範例選擇 ---
+# --- 側邊欄：快速範例 ---
 st.sidebar.header("⚡ 快速範例")
-
-# 修正點 1: 這裡移除 'signal.' 前綴，直接呼叫函數名，避免解析錯誤
 example_options = {
     "自訂輸入": "",
-    "方波 (Square Wave)": "square(x)",
+    "方波 (Square)": "square(x)",
     "多週期方波": "square(3 * x)",
     "鋸齒波 (Sawtooth)": "sawtooth(x)",
-    "三角波 (Triangle)": "sawtooth(x, 0.5)",
+    "三角波": "sawtooth(x, 0.5)",
     "全波整流": "abs(sin(x))",
     "半波整流": "maximum(sin(x), 0)",
-    "脈衝波 (Duty Cycle)": "square(x, duty=0.2)"
+    "脈衝波": "square(x, duty=0.2)"
 }
-
 selected_example = st.sidebar.radio("選擇預設波形：", list(example_options.keys()))
-
-# 根據選擇更新預設值
-default_func = "x"
+default_func = "square(x)" if selected_example != "自訂輸入" else "x"
 if selected_example != "自訂輸入":
     default_func = example_options[selected_example]
 
-# --- 主介面：輸入參數 ---
+# --- 參數設定區 ---
 col1, col2, col3, col4 = st.columns(4)
-
 with col1:
-    # 這裡加上 key 以便重置
-    func_str = st.text_input("函數 f(x)", value=default_func, help="使用 Python 語法，如 x**2, sin(x)")
+    func_str = st.text_input("函數 f(x)", value=default_func)
 with col2:
-    a = st.number_input("區間起點 a", value=-3.14159, step=1.0, format="%.4f")
+    a = st.number_input("區間起點 a", value=-3.1415, step=1.0, format="%.4f")
 with col3:
-    b = st.number_input("區間終點 b", value=3.14159, step=1.0, format="%.4f")
+    b = st.number_input("區間終點 b", value=3.1415, step=1.0, format="%.4f")
 with col4:
-    N = st.number_input("展開項數 N", value=30, min_value=1, step=1)
+    # 這裡改名為 Max N，代表計算的上限
+    max_n = st.number_input("最大項數 (計算上限)", value=50, min_value=1, step=10)
 
-# --- 核心邏輯函數 ---
-def get_fourier_data(func_str, a, b, N):
+# --- 核心運算函數 (一次算完所有係數) ---
+def calculate_coefficients(func_str, a, b, max_n):
     # 1. 解析函數
     def f(x_val):
-        # 修正點 2: 擴充 allowed_locals，確保兼容性
         allowed_locals = {
             "x": x_val, "np": np, "signal": signal,
-            # 基礎數學
             "sin": np.sin, "cos": np.cos, "tan": np.tan,
             "exp": np.exp, "pi": np.pi, "abs": np.abs, 
             "sqrt": np.sqrt, "log": np.log, "sign": np.sign,
             "maximum": np.maximum, "minimum": np.minimum,
-            # 信號函數 (直接使用)
             "square": signal.square, "sawtooth": signal.sawtooth,
-            # 特殊函數
             "gamma": special.gamma, "sinh": np.sinh, "cosh": np.cosh,
         }
         return eval(func_str, {"__builtins__": None}, allowed_locals)
 
-    # 2. 計算係數
     L = b - a
     omega = 2 * np.pi / L
     
-    data = [] 
     A_coeffs = []
     B_coeffs = []
+    
+    # 進度條
+    progress_bar = st.progress(0)
+    status_text = st.empty()
 
-    # A0
+    # 計算 A0
     try:
         val_a0, _ = quad(lambda x: f(x), a, b, limit=200)
         A0 = (2.0 / L) * val_a0
     except Exception as e:
-        # 捕捉常見錯誤並轉為易讀文字
-        return None, None, None, f"解析或積分錯誤: {str(e)}\n請檢查語法 (例如乘號 * 是否遺漏)"
+        return None, f"積分錯誤: {str(e)}"
 
     A_coeffs.append(A0)
     B_coeffs.append(0.0)
-    data.append({"n": 0, "An": A0, "Bn": 0.0})
 
-    # Progress bar
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    
-    for n in range(1, N + 1):
+    # 計算 An, Bn (直到 Max N)
+    for n in range(1, max_n + 1):
         val_an, _ = quad(lambda x: f(x) * np.cos(n * omega * x), a, b, limit=100)
         an = (2.0 / L) * val_an
         
@@ -103,96 +94,120 @@ def get_fourier_data(func_str, a, b, N):
 
         A_coeffs.append(an)
         B_coeffs.append(bn)
-        data.append({"n": n, "An": an, "Bn": bn})
-        
+
         if n % 5 == 0:
-            progress_bar.progress(n / N)
-            status_text.text(f"正在計算第 {n}/{N} 項...")
-            
+            progress_bar.progress(n / max_n)
+            status_text.text(f"正在計算係數: {n}/{max_n}")
+
     progress_bar.empty()
     status_text.empty()
 
-    # 3. 準備繪圖函數
-    def fourier_sum(x_input, k_terms):
-        result = A_coeffs[0] / 2.0
-        for k in range(1, k_terms + 1):
-            result += A_coeffs[k] * np.cos(k * omega * x_input) + \
-                      B_coeffs[k] * np.sin(k * omega * x_input)
-        return result
+    # 為了加速繪圖，我們先算出原函數的 y 值存起來
+    x_vals = np.linspace(a, b, 1000)
+    try:
+        y_original = [f(val) for val in x_vals]
+    except:
+        y_original = None
 
-    return data, f, fourier_sum, None
+    # 將結果打包回傳
+    return {
+        "A": A_coeffs,
+        "B": B_coeffs,
+        "omega": omega,
+        "x_vals": x_vals,
+        "y_original": y_original,
+        "func_str": func_str,
+        "L": L,
+        "range": (a, b)
+    }, None
 
-# --- 執行按鈕 ---
-if st.button("🚀 開始計算與繪圖", type="primary"):
-    with st.spinner("正在進行數學運算..."):
-        data_list, f_func, f_sum_func, error_msg = get_fourier_data(func_str, a, b, N)
-
-    if error_msg:
-        st.error(error_msg)
+# --- 按鈕區 ---
+if st.button("🚀 開始計算 (建立係數庫)", type="primary"):
+    with st.spinner("正在進行積分運算，這可能需要一點時間..."):
+        result, error = calculate_coefficients(func_str, a, b, max_n)
+        
+    if error:
+        st.error(error)
     else:
-        # 建立 DataFrame
-        df = pd.DataFrame(data_list)
+        # 將結果存入 Session State，這樣拉動拉桿時才不會重算
+        st.session_state['fourier_result'] = result
+        st.rerun() # 重新整理頁面以顯示拉桿
 
-        # --- 繪圖區塊 ---
-        st.subheader("📊 視覺化結果")
-        
-        # 設定 Matplotlib
-        plt.rcParams['axes.unicode_minus'] = False
-        fig, ax = plt.subplots(figsize=(10, 6))
-        
-        x_vals = np.linspace(a, b, 1000)
-        
-        # 繪製原函數
-        try:
-            y_original = [f_func(val) for val in x_vals]
-            ax.plot(x_vals, y_original, 'k-', linewidth=2, alpha=0.5, label='Original f(x)')
-        except Exception as e:
-            st.warning(f"無法完整繪製原函數: {e}")
+# --- 結果顯示區 (只有當計算過後才會出現) ---
+if st.session_state['fourier_result'] is not None:
+    res = st.session_state['fourier_result']
+    
+    st.divider()
+    
+    # === 互動拉桿區 ===
+    # 這裡的拉桿變動時，因為我們用的是 session_state 的數據，所以反應會極快
+    current_n = st.slider(
+        "🎚️ 調整 N 值 (觀察逼近過程)", 
+        min_value=0, 
+        max_value=len(res["A"]) - 1, 
+        value=min(10, len(res["A"]) - 1)
+    )
 
-        # 繪製近似線
-        y_n1 = f_sum_func(x_vals, 1)
-        ax.plot(x_vals, y_n1, 'g:', linewidth=1.5, alpha=0.8, label='N=1')
+    # === 快速合成函數 ===
+    # 利用 numpy 向量運算，不做積分，速度極快
+    def fast_reconstruct(n_terms):
+        # S = A0/2
+        y_approx = np.full_like(res["x_vals"], res["A"][0] / 2.0)
+        # + Sum(An cos + Bn sin)
+        for k in range(1, n_terms + 1):
+            y_approx += res["A"][k] * np.cos(k * res["omega"] * res["x_vals"]) + \
+                        res["B"][k] * np.sin(k * res["omega"] * res["x_vals"])
+        return y_approx
 
-        if N >= 3:
-            y_n3 = f_sum_func(x_vals, 3)
-            ax.plot(x_vals, y_n3, 'orange', linestyle='-.', linewidth=1.5, alpha=0.8, label='N=3')
+    # 計算當前 N 的波形
+    y_current = fast_reconstruct(current_n)
 
-        y_final = f_sum_func(x_vals, N)
-        ax.plot(x_vals, y_final, 'b--', linewidth=2.5, alpha=0.9, label=f'N={N} Approximation')
+    # === 繪圖 ===
+    plt.rcParams['axes.unicode_minus'] = False
+    fig, ax = plt.subplots(figsize=(10, 5))
+    
+    # 1. 原函數 (黑線)
+    if res["y_original"] is not None:
+        ax.plot(res["x_vals"], res["y_original"], 'k-', linewidth=2, alpha=0.4, label='Original')
 
-        ax.set_title(f"Fourier Series: {func_str}")
-        ax.set_xlabel("x")
-        ax.set_ylabel("f(x)")
-        ax.legend(loc='upper right')
-        ax.grid(True, linestyle='--', alpha=0.6)
-        ax.axhline(0, color='black', linewidth=0.8)
+    # 2. 當前 N 的近似 (藍線)
+    ax.plot(res["x_vals"], y_current, 'b-', linewidth=2.5, alpha=0.9, label=f'N={current_n}')
+    
+    # 3. N=1 基頻 (參考用，綠虛線)
+    if current_n > 1:
+        y_n1 = fast_reconstruct(1)
+        ax.plot(res["x_vals"], y_n1, 'g:', alpha=0.6, linewidth=1, label='N=1')
 
-        st.pyplot(fig)
+    ax.set_title(f"Fourier Series Approximation (N={current_n})")
+    ax.set_ylim(np.min(y_current)*1.2 - 1, np.max(y_current)*1.2 + 1) # 固定 Y 軸避免跳動
+    ax.legend(loc='upper right')
+    ax.grid(True, linestyle='--', alpha=0.5)
+    
+    st.pyplot(fig)
 
-        # --- 下載區塊 ---
-        col_d1, col_d2 = st.columns(2)
+    # === 下載區 ===
+    col_d1, col_d2 = st.columns(2)
+    
+    # 圖片下載
+    img_buffer = io.BytesIO()
+    fig.savefig(img_buffer, format='png', dpi=300)
+    img_buffer.seek(0)
+    col_d1.download_button("📥 下載此圖 (PNG)", img_buffer, f"fourier_N{current_n}.png", "image/png")
 
-        img_buffer = io.BytesIO()
-        fig.savefig(img_buffer, format='png', dpi=300)
-        img_buffer.seek(0)
-        
-        with col_d1:
-            st.download_button(
-                label="📥 下載圖表 (PNG)",
-                data=img_buffer,
-                file_name="fourier_plot.png",
-                mime="image/png"
-            )
+    # 表格下載 (產生包含所有係數的表)
+    df = pd.DataFrame({
+        "n": range(len(res["A"])),
+        "An": res["A"],
+        "Bn": res["B"]
+    })
+    csv_data = df.to_csv(index=False, sep='\t', encoding='utf-8-sig')
+    col_d2.download_button("📥 下載完整係數表 (CSV)", csv_data, "coeffs.csv", "text/csv")
 
-        csv_data = df.to_csv(index=False, sep='\t', encoding='utf-8-sig')
-        
-        with col_d2:
-            st.download_button(
-                label="📥 下載係數表 (Excel/CSV)",
-                data=csv_data,
-                file_name="fourier_coefficients.csv",
-                mime="text/csv"
-            )
+    # 係數預覽
+    with st.expander(f"查看前 {current_n} 項係數數值"):
+        st.dataframe(df.head(current_n + 1))
 
-        with st.expander("點擊查看詳細係數表"):
-            st.dataframe(df)
+    # 重置按鈕
+    if st.button("🔄 清除結果 / 重新輸入"):
+        st.session_state['fourier_result'] = None
+        st.rerun()
